@@ -31,7 +31,7 @@ The gateway accepts a request in OpenAI, Claude or Gemini shape, translates it t
 | OAuth | Claude, OpenAI Codex, Gemini CLI, Antigravity, Kiro, Kimi (Moonshot), Grok CLI, xAI, Cursor, GitHub Copilot, GitLab, Windsurf, Trae, Zed, iFlow, Qoder, Cline, KiloCode, CodeBuddy, Xiaomi MIMO |
 | API key | OpenAI, Anthropic, DeepSeek, GLM (Z.ai / Zhipu), MiniMax, Mistral, Perplexity, Groq, Together, Fireworks, Cerebras, SambaNova, SiliconFlow, Nebius, Hugging Face, Venice, Voyage and dozens more |
 | Free tier | OpenRouter, OpenCode, Kiro, Gemini, Cloudflare AI, NVIDIA, Morph, Poolside, Kimchi, LLM7, api-airforce |
-| Web cookie | DeepSeek Web, Gemini Web, Kimi Web |
+| Web cookie | DeepSeek Web, Gemini Web, Kimi Web, GLM Web |
 | Local | Ollama, LM Studio style self-hosted nodes, self-hosted TTS/STT/embeddings |
 
 It is not only chat. The same gateway also serves text to image, image to text, video generation, text to speech, speech to text, embeddings, web search and web fetch, each with its own `/v1`-style endpoint.
@@ -54,10 +54,12 @@ Everything below lives alongside upstream's features and is documented in the [c
 
 **Update checks.** The dashboard compares your checkout against this repository and tells you when new commits are available, with a one-click auto updater on CLI installs.
 
+**GLM Webcookie** Yay!
+
 ## Getting started
 
 ```bash
-git clone https://github.com/serenhope/9router.git
+git clone https://github.com/serenhope/9routerglm2api.git
 cd 9router
 npm install
 npm run dev          # dashboard on http://localhost:20127
@@ -67,7 +69,7 @@ Production:
 
 ```bash
 npm run build
-npm run start
+node custom-server.js --port 20127
 ```
 
 Docker:
