@@ -16,6 +16,7 @@ import { GrokCliExecutor } from "./grok-cli.js";
 import { DeepSeekWebExecutor } from "./deepseek-web.js";
 import { GeminiWebExecutor } from "./gemini-web.js";
 import { KimiWebExecutor } from "./kimi-web.js";
+import { ZaiWebExecutor } from "./zai-web.js";
 import { OllamaLocalExecutor } from "./ollama-local.js";
 import { CommandCodeExecutor } from "./commandcode.js";
 import { XiaomiTokenplanExecutor } from "./xiaomi-tokenplan.js";
@@ -59,6 +60,9 @@ const executors = {
   "kimi-web": new KimiWebExecutor(),
   kweb: new KimiWebExecutor(),
   "kimi-cookie": new KimiWebExecutor(),
+  "zai-web": new ZaiWebExecutor(),
+  zai: new ZaiWebExecutor(),
+  "zai-cookie": new ZaiWebExecutor(),
   "ollama-local": new OllamaLocalExecutor(),
   commandcode: new CommandCodeExecutor(),
   "xiaomi-tokenplan": new XiaomiTokenplanExecutor(),

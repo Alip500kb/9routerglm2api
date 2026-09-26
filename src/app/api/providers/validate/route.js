@@ -631,6 +631,47 @@ export async function POST(request) {
           break;
         }
 
+        case "zai-web": {
+          // chat.z.ai stores a JWT under localStorage["token"]. We only need to
+          // prove it authenticates; the completion call additionally needs the
+          // captcha device-token pool, which is validated at request time.
+          let token = apiKey.trim();
+          if (token.startsWith("{")) {
+            try {
+              const parsed = JSON.parse(token);
+              const inner = parsed?.value || parsed?.token;
+              if (typeof inner === "string") token = inner.trim();
+            } catch {}
+          }
+          const bearerMatch = token.match(/^(?:authorization:\s*)?Bearer\s+(.+)$/i);
+          if (bearerMatch) token = bearerMatch[1].trim();
+          token = token.replace(/^["']|["']$/g, "").trim();
+
+          if (!token || token.split(".").length !== 3) {
+            isValid = false;
+            error = "Invalid token - copy the `token` value from chat.z.ai DevTools -> Application -> Local Storage";
+            break;
+          }
+
+          const res = await fetch("https://chat.z.ai/api/models", {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+              "X-FE-Version": "prod-fe-1.1.96",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            },
+            signal: AbortSignal.timeout(8000),
+          }).catch(() => null);
+
+          if (!res || !res.ok) {
+            isValid = false;
+            error = "Invalid or expired token - re-copy `token` from chat.z.ai DevTools -> Application -> Local Storage";
+          } else {
+            isValid = true;
+          }
+          break;
+        }
+
         case "qoder":
         case "qoder-cn": {
           // PAT (pt-...) needs the job-token exchange before it can sign

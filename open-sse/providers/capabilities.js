@@ -267,6 +267,17 @@ export const PROVIDER_CAPABILITIES = {
     "k3": { tools: false, reasoning: true, contextWindow: 262144, maxOutput: 65536 },
     "k2d6": { tools: false, reasoning: true, contextWindow: 262144, maxOutput: 65536 },
   },
+  // Z.AI / ChatGLM Web. Surfaces reasoning as reasoning_content. The upstream
+  // RAG endpoint speaks text only, but the executor bridges OpenAI `tools`
+  // into a prompt protocol and parses calls back into tool_calls deltas
+  // (see executors/zaiToolBridge.js), so `tools` is advertised as supported.
+  // Upstream serves glm-5.3-flash under the id "x-preview-l".
+  // GLM-5.3 / 5.3-Flash / 5.2 all carry the full 1M-token window upstream.
+  "zai-web": {
+    "glm-5.3": { tools: true, reasoning: true, thinkingFormat: "zai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 131072 },
+    "glm-5.3-flash": { tools: true, reasoning: true, thinkingFormat: "zai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 131072 },
+    "glm-5.2": { tools: true, reasoning: true, thinkingFormat: "zai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
+  },
 };
 
 // Qoder CN serves the identical model catalog from the CN gateway, so it shares

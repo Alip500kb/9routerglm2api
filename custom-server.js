@@ -155,7 +155,31 @@ http.createServer = (...args) => {
   return server;
 };
 
+// The standalone Next server (`.next/standalone/server.js`) reads the port from
+// `process.env.PORT` ONLY — it ignores `--port`/`-p` on the command line. A bare
+// `node custom-server.js` (or `npm start`, which passes `--port 20127`) would
+// therefore silently fall back to Next's 3000 default. Translate the CLI flag
+// into the env var so every entry point lands on the intended port.
+function resolvePortArg(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--port" || arg === "-p") {
+      const value = argv[i + 1];
+      if (value && /^\d+$/.test(value)) return value;
+    }
+    const inline = /^--port=(\d+)$/.exec(arg);
+    if (inline) return inline[1];
+  }
+  return null;
+}
+
+// Exported for unit tests; harmless when the module is loaded as a plain script.
+module.exports.resolvePortArg = resolvePortArg;
+
 if (require.main === module) {
+  const portArg = resolvePortArg(process.argv.slice(2));
+  if (portArg && !process.env.PORT) process.env.PORT = portArg;
+
   const standalone = path.join(__dirname, "server.js");
   if (fs.existsSync(standalone)) {
     require(standalone);

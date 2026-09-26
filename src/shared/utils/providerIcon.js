@@ -9,6 +9,7 @@ const ICON_ALIASES = {
   "deepseek-web": "deepseek",
   "gemini-web": "gemini",
   "kimi-web": "kimi",
+  "zai-web": "glm",
 };
 
 const TYPE_PREFIX_ALIASES = {
