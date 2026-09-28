@@ -207,23 +207,62 @@ function lastUserPrompt(messages) {
   return "";
 }
 
+/**
+ * Render an assistant turn's `tool_calls` into the same JSON lines the bridge
+ * asks the model to emit. Without this the upstream transcript shows a
+ * "Tool result" turn whose originating call was never rendered, so the model
+ * cannot tell which tool ran or with what arguments and either repeats the
+ * call or stalls on a one-token reply.
+ * @param {Array} toolCalls - OpenAI tool_calls array
+ * @returns {string}
+ */
+function renderToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) return "";
+  return toolCalls
+    .map((tc) => {
+      const fn = tc?.function ?? tc;
+      const name = fn?.name;
+      if (!name) return "";
+      let args = fn?.arguments ?? fn?.args ?? {};
+      if (typeof args === "string") {
+        try { args = JSON.parse(args); } catch { args = {}; }
+      }
+      try {
+        return JSON.stringify({ tool: name, args: args ?? {} });
+      } catch {
+        return JSON.stringify({ tool: name, args: {} });
+      }
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 /** Build the upstream message list; system turns are folded into the first user turn. */
-function buildUpstreamMessages(messages, tools) {
+export function buildUpstreamMessages(messages, tools) {
   const arr = Array.isArray(messages) ? messages : [];
   const out = [];
   const systemParts = [];
 
   for (const m of arr) {
     const text = extractMessageText(m?.content).trim();
-    if (!text) continue;
     if (m.role === "system" || m.role === "developer") {
-      systemParts.push(text);
+      if (text) systemParts.push(text);
       continue;
     }
-    if (m.role === "user" || m.role === "assistant") {
-      out.push({ role: m.role, content: text });
-    } else if (m.role === "tool") {
-      out.push({ role: "user", content: `Tool result${m.name ? ` (${m.name})` : ""}: ${text}` });
+    if (m.role === "assistant") {
+      // An assistant turn that requested tools often carries content:null, so
+      // `text` is empty — but the call itself must still reach the model.
+      const calls = renderToolCalls(m.tool_calls);
+      const combined = [text, calls].filter(Boolean).join("\n");
+      if (combined) out.push({ role: "assistant", content: combined });
+      continue;
+    }
+    if (m.role === "user") {
+      if (text) out.push({ role: "user", content: text });
+      continue;
+    }
+    if (m.role === "tool") {
+      if (text) out.push({ role: "user", content: `Tool result${m.name ? ` (${m.name})` : ""}: ${text}` });
     }
   }
 
@@ -256,6 +295,29 @@ function buildUpstreamMessages(messages, tools) {
  *                                                     edit_index then extended
  *   { phase: "done", done: true }                   -> terminal
  */
+/**
+ * Project the raw upstream buffer onto user-visible content (reasoning block
+ * removed) and emit only the newly-appended tail.
+ *
+ * Both the `delta_content` (answer phase) and `edit_content` paths funnel
+ * through here so `state.emitted` — the value `collectSSE()` returns — always
+ * tracks the real answer. The site normally closes its answer with an edit
+ * frame, but when a generation ends on plain answer deltas the old code left
+ * `emitted` empty, so tool-mode and non-stream callers saw a hollow reply and
+ * the executor retried forever (the "empty / one-token answer" symptom).
+ */
+function projectVisible(state, events) {
+  const projected = stripReasoningBlock(state.raw);
+  if (projected.length > state.emitted.length && projected.startsWith(state.emitted)) {
+    const delta = projected.slice(state.emitted.length);
+    state.emitted = projected;
+    if (delta) events.push({ kind: "content", text: delta });
+  } else if (projected !== state.emitted) {
+    state.emitted = projected;
+    events.push({ kind: "content", text: projected });
+  }
+}
+
 function parseFrame(payload, state) {
   const events = [];
   const phase = payload?.phase;
@@ -274,30 +336,19 @@ function parseFrame(payload, state) {
     // done="true" and appends the real answer after </details>).
     state.raw += payload.delta_content;
     if (phase === "thinking") events.push({ kind: "reasoning", text: cleanReasoningDelta(payload.delta_content) });
-    else events.push({ kind: "content", text: payload.delta_content });
+    else projectVisible(state, events);
   }
 
   if (typeof payload?.edit_content === "string") {
     const idx = typeof payload.edit_index === "number" ? payload.edit_index : state.raw.length;
     state.raw = state.raw.slice(0, idx) + payload.edit_content;
-    // Project the edit onto user-visible content (reasoning block removed) and
-    // emit only the newly-appended tail.
-    const projected = stripReasoningBlock(state.raw);
-    if (projected.length > state.emitted.length && projected.startsWith(state.emitted)) {
-      const delta = projected.slice(state.emitted.length);
-      state.emitted = projected;
-      if (delta) events.push({ kind: "content", text: delta });
-    } else if (projected !== state.emitted) {
-      // Rewrite (e.g. the reasoning block was closed): emit the corrected tail.
-      state.emitted = projected;
-      events.push({ kind: "content", text: projected });
-    }
+    projectVisible(state, events);
   }
 
   return { events, state };
 }
 
-function makeSseCollector(model) {
+export function makeSseCollector(model) {
   const state = { raw: "", emitted: "" };
   let reasoning = "";
   let usage = null;
@@ -522,25 +573,46 @@ function upstreamErrorText(err) {
   return err.detail || err.message || err.code || err.error_code || JSON.stringify(err).slice(0, 200);
 }
 
+/** Does this fragment look like it is trying to express a tool call? */
+function mentionsToolKeys(fragment) {
+  // A tool-call payload always quotes its keys. Requiring the quote keeps
+  // ordinary prose like `Gunakan {key: value} ya.` from looking like a call.
+  return /"(tool|function|name)"\s*:/.test(fragment) || fragment.startsWith('{"');
+}
+
 /**
  * True when the answer is an attempted-but-cut JSON object. chat.z.ai's free
  * tier sometimes drops the final edit_content frame, leaving a fragment like
  * `{"` or `{"tool":"get` — non-empty text that would otherwise pass through as
  * a legitimate reply and stall the caller.
  *
- * In tool mode a well-formed answer is either prose or a complete JSON object,
- * so anything that opens a brace but does not parse as complete JSON is a cut
- * generation.
+ * In tool mode a well-formed answer is either prose or a complete JSON object.
+ * The model commonly prefixes that object with prose or a reasoning block before
+ * the stream is cut, so `text.startsWith("{")` is not a sufficient test — that
+ * missed "prose + truncated JSON" and let the raw `{"tool":…` fragment leak into
+ * `content` instead of being retried.
+ *
  * @param {string} content
  */
 export function looksLikeTruncatedToolCall(content) {
-  const text = String(content || "").trim();
-  if (!text.startsWith("{")) return false;
+  const text = stripReasoningBlock(String(content || "")).trim();
+  if (!text) return false;
+
+  // A complete call (or any complete object) is not a truncation.
+  if (parseToolCall(text)) return false;
+
+  const start = text.indexOf("{");
+  if (start === -1) return false;
+
+  const tail = text.slice(start);
   try {
-    JSON.parse(text);
+    JSON.parse(tail);
     return false; // valid, complete JSON — not truncated
   } catch {
-    return true; // opens a brace but never closes as valid JSON
+    // Opens a brace but never closes as valid JSON. Only call it truncated when
+    // the fragment actually looks like a tool call, so prose containing a stray
+    // "{" (e.g. "{key: value}") is still delivered as a normal reply.
+    return mentionsToolKeys(tail);
   }
 }
 

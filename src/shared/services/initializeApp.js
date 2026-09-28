@@ -125,6 +125,12 @@ async function runHeavyStartup() {
   import("@/sse/services/backgroundTokenRefresh.js")
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
+
+  // Top up the single-use Z.AI device-token pool before it runs dry. No-op when
+  // no JWT is configured; see src/sse/services/zaiDeviceTokenRefill.js.
+  import("@/sse/services/zaiDeviceTokenRefill.js")
+    .then(({ startZaiDeviceTokenRefill }) => startZaiDeviceTokenRefill())
+    .catch((e) => console.log("[ZaiRefill] scheduler start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

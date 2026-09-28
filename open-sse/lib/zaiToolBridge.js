@@ -55,9 +55,30 @@ ${toolsBlock}
 Rules:
 - If the user's question can be answered directly without a tool, reply normally in plain text.
 - If a tool is required, output exactly one JSON object matching the format above and nothing else.
-- Do not wrap the JSON in code fences or add any surrounding text when calling a tool.`;
+- Do not wrap the JSON in code fences or add any surrounding text when calling a tool.
+- When the conversation contains a "Tool result (...)" turn, that is the output of a tool you already called. Use it to continue: either call the next tool or give the final answer.
+- Never repeat a tool call whose arguments you have already sent.`;
 
   return systemPrompt ? `${systemPrompt}\n${instruction}` : instruction;
+}
+
+/**
+ * Is this object shaped like a tool call?
+ *
+ * Accepts the OpenAI wrapper `{type,function:{name,...}}`, the bridge form
+ * `{tool,args}`, and the bare `{name,arguments}` form. The bare form requires an
+ * args-ish key too — otherwise any `{"name":"..."}` object (a config blob, a
+ * person record) would be mistaken for a call.
+ * @param {unknown} obj
+ */
+export function isToolCallShape(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  if (obj.tool !== undefined) return true;
+  if (obj.function !== undefined) return true;
+  return (
+    typeof obj.name === "string" &&
+    (obj.arguments !== undefined || obj.args !== undefined)
+  );
 }
 
 /**
@@ -72,12 +93,7 @@ export function parseToolCall(text) {
   // Try direct parse (whole reply is JSON)
   try {
     const obj = JSON.parse(text.trim());
-    if (
-      obj &&
-      typeof obj === "object" &&
-      (obj.tool !== undefined || obj.function !== undefined)
-    )
-      return normalize(obj);
+    if (isToolCallShape(obj)) return normalize(obj);
   } catch {}
 
   // Look for a fenced JSON block
@@ -85,12 +101,7 @@ export function parseToolCall(text) {
   if (fenceMatch) {
     try {
       const obj = JSON.parse(fenceMatch[1].trim());
-      if (
-        obj &&
-        typeof obj === "object" &&
-        (obj.tool !== undefined || obj.function !== undefined)
-      )
-        return normalize(obj);
+      if (isToolCallShape(obj)) return normalize(obj);
     } catch {}
   }
 
@@ -101,8 +112,7 @@ export function parseToolCall(text) {
   for (const candidate of findJsonObjects(text)) {
     try {
       const obj = JSON.parse(candidate);
-      if (obj && typeof obj === "object" && (obj.tool !== undefined || obj.function !== undefined))
-        return normalize(obj);
+      if (isToolCallShape(obj)) return normalize(obj);
     } catch {
       /* not valid JSON — keep scanning */
     }
@@ -162,6 +172,10 @@ function normalize(obj) {
 /**
  * Remove the JSON tool-call block from the assistant's visible text so stream
  * clients see only prose (the call itself travels as tool_calls deltas).
+ *
+ * Also drops any leftover reasoning envelope: when the model prefixes its call
+ * with `<details type="reasoning">…</details>`, stripping just the JSON would
+ * leave that raw markup in `content`.
  * @param {string} text
  * @returns {string}
  */
@@ -176,6 +190,10 @@ export function stripToolCallJson(text) {
   for (const obj of findJsonObjects(out)) {
     if (parseToolCall(obj)) out = out.replace(obj, "");
   }
+  // Drop the reasoning envelope, closed or still open (mirrors zai-web.js).
+  out = out
+    .replace(/<details\s+type="reasoning"[^>]*>[\s\S]*?<\/details>\s*/gi, "")
+    .replace(/<details\s+type="reasoning"[^>]*>[\s\S]*$/i, "");
   return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 

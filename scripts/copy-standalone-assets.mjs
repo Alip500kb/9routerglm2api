@@ -37,6 +37,15 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
     cpSync(serverWrapperSource, serverWrapperDestination, { force: true });
     console.log(`[standalone-assets] Copied custom-server.js to ${serverWrapperDestination}`);
   }
+
+  // The zai-web device-token auto-refill scheduler spawns this harvester, and it
+  // is resolved relative to the runtime cwd — so it has to ship with the build.
+  const harvesterSource = resolve(projectRoot, "scripts", "zai-harvest-device-tokens.py");
+  const harvesterDestination = resolve(standaloneDir, "scripts", "zai-harvest-device-tokens.py");
+  if (existsSync(harvesterSource)) {
+    cpSync(harvesterSource, harvesterDestination, { force: true });
+    console.log(`[standalone-assets] Copied harvester to ${harvesterDestination}`);
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(dirname(fileURLToPath(import.meta.url)), "copy-standalone-assets.mjs")) {

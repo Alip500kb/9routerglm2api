@@ -102,3 +102,5 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+__pycache__/
+*.pyc

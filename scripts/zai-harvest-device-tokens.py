@@ -47,6 +47,77 @@ def resolve_pool_path() -> pathlib.Path:
     return pathlib.Path(os.environ.get("ZAI_DEVICE_TOKEN_POOL") or DEFAULT_POOL)
 
 
+def resolve_lock_path() -> pathlib.Path:
+    """Must match open-sse/lib/zaiDeviceToken.js: `<pool>.lock`."""
+    return pathlib.Path(f"{resolve_pool_path()}.lock")
+
+
+class PoolLock:
+    """Same cross-process lock the JS executor uses, so a harvest can never
+    race a take/return and silently drop the tokens written by the other side.
+
+    O_CREAT|O_EXCL means exactly one winner per instant. A lock whose owner pid
+    is gone, or older than LOCK_STALE_S, is reclaimed.
+    """
+
+    LOCK_STALE_S = 30.0
+    WAIT_S = 3.0
+
+    def __init__(self, path: pathlib.Path | None = None) -> None:
+        self.path = path or resolve_lock_path()
+        self.held = False
+
+    @staticmethod
+    def _alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        # A zombie answers signal 0 but is gone; a SIGKILLed server leaves one
+        # behind, which would otherwise hold the lock for the whole stale window.
+        try:
+            stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+            if stat[stat.rindex(")") + 2] == "Z":
+                return False
+        except Exception:
+            pass
+        return True
+
+    def __enter__(self) -> "PoolLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.WAIT_S
+        while time.monotonic() < deadline:
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    json.dump({"pid": os.getpid(), "at": time.time() * 1000}, fh)
+                self.held = True
+                return self
+            except FileExistsError:
+                try:
+                    info = json.loads(self.path.read_text())
+                    age = time.time() * 1000 - float(info.get("at", 0))
+                    if not self._alive(int(info.get("pid", 0))) or age > self.LOCK_STALE_S * 1000:
+                        self.path.unlink(missing_ok=True)
+                        continue
+                except Exception:
+                    pass
+                time.sleep(0.002)
+        # Timed out: proceed unlocked rather than failing the harvest outright.
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self.held:
+            try:
+                self.path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def load_pool(path: pathlib.Path) -> dict:
     try:
         data = json.loads(path.read_text())
@@ -58,7 +129,11 @@ def load_pool(path: pathlib.Path) -> dict:
 
 def save_pool(path: pathlib.Path, pool: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({**pool, "updatedAt": int(time.time() * 1000)}, indent=2))
+    # Temp file + rename, matching open-sse/lib/zaiDeviceToken.js: rename is
+    # atomic, so a reader never parses a half-written pool.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({**pool, "updatedAt": int(time.time() * 1000)}, indent=2))
+    os.replace(tmp, path)
 
 
 def find_chromium() -> str | None:
@@ -164,7 +239,6 @@ def main() -> int:
         return 2
 
     pool_path = resolve_pool_path()
-    before = load_pool(pool_path)
 
     print(f"Harvesting {args.count} device tokens...")
     try:
@@ -177,10 +251,18 @@ def main() -> int:
         print("ERROR: harvested 0 tokens.", file=sys.stderr)
         return 1
 
-    merged = before["tokens"] + [t for t in fresh if t not in before["tokens"]]
-    save_pool(pool_path, {"tokens": merged})
+    # Re-read the pool AFTER harvesting. The harvest takes tens of seconds, and
+    # the executor is consuming tokens the whole time — merging into a snapshot
+    # taken before the browser work would resurrect already-spent tokens (and
+    # hand one device token to two requests). Single-use must stay single-use.
+    # The lock keeps this read-modify-write from racing takeDeviceToken().
+    with PoolLock():
+        current = load_pool(pool_path)
+        before_count = len(current["tokens"])
+        merged = current["tokens"] + [t for t in fresh if t not in current["tokens"]]
+        save_pool(pool_path, {"tokens": merged})
     print(f"Harvested {len(fresh)} new tokens.")
-    print(f"Pool: {len(before['tokens'])} -> {len(merged)}  ({pool_path})")
+    print(f"Pool: {before_count} -> {len(merged)}  ({pool_path})")
     return 0
 
 

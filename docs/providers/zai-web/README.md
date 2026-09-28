@@ -99,6 +99,39 @@ Check the current depth:
 python3 -c "import json,pathlib; print(len(json.loads((pathlib.Path.home()/'.hermes/zai-device-tokens.json').read_text())['tokens']), 'tokens')"
 ```
 
+### Auto-refill
+
+The pool is topped up in the background by `src/sse/services/zaiDeviceTokenRefill.js`,
+started from `initializeApp.js` and `custom-server.js` alongside the OAuth refresh
+scheduler. When the depth drops below `ZAI_REFILL_THRESHOLD` it spawns the
+harvester out-of-process and waits for the pool to recover, so a request never
+has to hit a dry pool.
+
+The scheduler needs the `chat.z.ai` localStorage JWT. Provide it as `ZAI_TOKEN`,
+or drop it in a file (default `~/.hermes/zai-jwt`, `chmod 600`) and point
+`ZAI_TOKEN_FILE` at it. **With no JWT the scheduler is a silent no-op** — it
+never errors, it just does nothing, and an empty pool still returns the usual 503.
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `ZAI_REFILL_THRESHOLD` | `10` | Refill once the pool drops below this |
+| `ZAI_REFILL_TARGET` | `50` | Depth to aim for (never below the threshold) |
+| `ZAI_REFILL_INTERVAL_MS` | `300000` | Scheduler period |
+| `ZAI_REFILL_COOLDOWN_MS` | `600000` | Back-off after a failed harvest |
+| `ZAI_REFILL_TIMEOUT_MS` | `180000` | Kill a stuck harvester |
+| `ZAI_HARVEST_SCRIPT` | `scripts/zai-harvest-device-tokens.py` | Harvester path |
+| `ZAI_REFILL_LOCK` | `<pool>.refill.lock` | Cross-process lock file |
+| `DISABLE_ZAI_AUTO_REFILL` | — | Set to `1` to turn the scheduler off |
+
+Two processes (say, two ports) share one pool file, so harvests are serialised by
+a pid-stamped lock; a lock whose owner is gone, or older than 15 minutes, is
+reclaimed automatically. The JWT is passed to the harvester through the
+environment, never `argv`, so it does not show up in `ps`.
+
+Because FeiLin only runs in a real browser, a refill needs Playwright + Chromium
+on the host and takes tens of seconds — that is why this runs ahead of demand
+instead of inline in a request.
+
 ---
 
 ## Tool calling
