@@ -60,7 +60,7 @@ Everything below lives alongside upstream's features and is documented in the [c
 
 ```bash
 git clone https://github.com/serenhope/9routerglm2api.git
-cd 9router
+cd 9routerglm2api
 npm install
 npm run dev          # dashboard on http://localhost:20127
 ```
